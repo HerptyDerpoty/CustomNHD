@@ -25,16 +25,19 @@ from datetime import datetime
 from tqdm import tqdm
 
 # ========== CONSTANTS ==========
+DEBUG = False
 CONFIG_FILE = "nh_downloader_config.json"
 TAG_CACHE_FILE = "tag_cache_full.json"
 SKIP_FILE = "already_downloaded.json"
 FAVORITES_CACHE_FILE = "favorites_downloaded.json"
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+USER_AGENT = "CustomNHD/1.0 (https://github.com/HerptyDerpoty/CustomNHD)"
 # ===================================
+
+if DEBUG: print("DEBUG: Script started, imports loaded")
 
 # ---------- JSON helpers with backup and atomic write ----------
 def load_json_with_backup(file_path):
-    """Load JSON from primary; fallback to backup; exit if both corrupt (non‑empty malformed)."""
+    """Load JSON from primary; fallback to backup; exit if both corrupt (nonempty malformed)."""
     primary = file_path
     backup = file_path + ".bak"
 
@@ -192,34 +195,33 @@ FAVORITES_DOWNLOADED = load_favorites_cache()
 
 # ---------- Config loading ----------
 def load_config():
+    if DEBUG: print("DEBUG: Looking for config file: {CONFIG_FILE}")
+    if DEBUG: print("DEBUG: Current working directory: {os.getcwd()}")
     if not os.path.exists(CONFIG_FILE):
         print(f"❌ Config file '{CONFIG_FILE}' not found.")
-        print("Example content:")
-if not os.path.exists(CONFIG_FILE):
-    print(f"❌ Config file '{CONFIG_FILE}' not found.")
-    print("Example config (copy the JSON below):")
-    print(json.dumps({
-        "queries": ["tag -tag tag",
-                    "tag -tag -tag tag"],
-        "consecutive_skipped_limit": 100,
-        "favorites_consecutive_skipped_limit": 100,
-        "max_concurrent_downloads": 3,
-        "download_dir": "./downloads",
-        "favorites_download_dir": "./favorites",
-        "favorites_max_pages": 0,
-        "delay_between_galleries": 1,
-        "per_page": 25,
-        "dry_run": False,
-        "stop_at_first": False,
-        "add_upload_date": True,
-        "api_key": "nhk_..."
-    }, indent=2))
-    print("\n# Notes:")
-    print("# - 'queries' supports search syntax (https://nhentai.net/info). Each query is processed sequentially.")
-    print("# - 'consecutive_skipped_limit': stop after N skipped galleries in a row. 0 = unlimited.")
-    print("# - 'favorites_max_pages' is redundant (the skip list already stops when hitting already downloaded favorites).")
-    print("# - 'delay_between_galleries' adds a pause after each gallery download, even with 1s delay we will be rate limited anyway.")
-    exit(1)
+        print("Example config (copy the JSON below):")
+        print(json.dumps({
+            "queries": ["tag -tag tag", "tag -tag -tag tag"],
+            "consecutive_skipped_limit": 100,
+            "favorites_consecutive_skipped_limit": 100,
+            "max_concurrent_downloads": 3,
+            "download_dir": "./downloads",
+            "favorites_download_dir": "./favorites",
+            "favorites_max_pages": 0,
+            "delay_between_galleries": 1,
+            "per_page": 25,
+            "dry_run": False,
+            "stop_at_first": False,
+            "add_upload_date": True,
+            "api_key": "nhk_..."
+        }, indent=2))
+        print("\n# Notes:")
+        print("# - 'queries' supports search syntax (https://nhentai.net/info). Each query is processed sequentially.")
+        print("# - 'consecutive_skipped_limit': stop after N skipped galleries in a row. 0 = unlimited.")
+        print("# - 'favorites_max_pages' is redundant (the skip list already stops when hitting already downloaded favorites).")
+        print("# - 'delay_between_galleries' adds a pause after each gallery download, even with 1s delay we will be rate limited anyway.")
+        sys.exit(1)
+    if DEBUG: print("DEBUG: Config file found, loading...")
     with open(CONFIG_FILE, 'r') as f:
         return json.load(f)
 
@@ -648,20 +650,28 @@ def run_queries(config):
 
 # ---------- Main ----------
 def main():
+    if DEBUG: print("DEBUG: Entered main()")
     start_time = datetime.now()
     print(f"🚀 Script started at {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     parser = argparse.ArgumentParser(description="nhentai downloader")
     parser.add_argument("--favorites", action="store_true", help="Download all favorites (requires API key in config)")
     args = parser.parse_args()
+    if DEBUG: print("DEBUG: Arguments parsed: {args}")
 
     config = load_config()
+    if DEBUG: print("DEBUG: Config loaded: {list(config.keys()) if config else 'None'}")
 
     if args.favorites:
+        if DEBUG: print("DEBUG: Running favorites mode")
         download_favorites(config)
     else:
+        if DEBUG: print("DEBUG: Running normal query mode")
         run_queries(config)
 
     end_time = datetime.now()
     duration = end_time - start_time
     print(f"✨ Script finished at {end_time.strftime('%Y-%m-%d %H:%M:%S')} (elapsed: {duration})")
+
+if __name__ == "__main__":
+    main()
