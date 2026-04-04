@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Rebuild skip lists from existing gallery folders (no CBZ extraction).
+Rebuild skip lists from existing gallery folders.
 
 Reads nh_downloader_config.json to get:
   - download_dir        -> used for normal mode skip list (already_downloaded.json)

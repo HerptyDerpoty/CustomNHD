@@ -40,6 +40,9 @@ python3 nh_downloader.py
 
 python3 nh_downloader.py --favorites
 
+Will dump cbzs into the download folders with this structure /12345 Name/12345 name.cbz  
+as this is what something like komga likes
+
 There is further info inside nh_downloader.py
 
 ## This is AI slop! Sorry!
