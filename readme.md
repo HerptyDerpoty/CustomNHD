@@ -23,7 +23,7 @@ Will slot in replace 9-FS/nhentai_archivist if you are using that to archive, us
 ## Installation
 
 
-git clone https://github.com/yourname/nhentai-dl  
+git clone https://github.com/HerptyDerpoty/CustomNHD  
 cd nhentai-dl  
 pip install -r requirements.txt
 
