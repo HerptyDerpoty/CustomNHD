@@ -1,8 +1,8 @@
 # Custom nhentai Downloader
 
 Downloads galleries from nhentai using the official v2 API.  
-Supports search queries and downloading your entire favorites list.
-Made to work with komga specifically hence the folder structure
+Supports search queries and downloading your entire favorites list.  
+Made to work with komga specifically hence the folder structure  
 Will slot in replace 9-FS/nhentai_archivist if you are using that to archive, uses same tag structure and folder naming scheme
 
 ## Features
