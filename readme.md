@@ -23,10 +23,13 @@ Supports search queries and downloading your entire favorites list.
 
 
 git clone https://github.com/yourname/nhentai-dl
+
 cd nhentai-dl
+
 pip install -r requirements.txt
 
 - On Debian/Ubuntu:
 
 sudo apt update
+
 sudo apt install python3-requests python3-tqdm
