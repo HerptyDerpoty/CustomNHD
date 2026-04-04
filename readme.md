@@ -36,7 +36,7 @@ sudo apt install python3-requests python3-tqdm
 
 python3 nh_downloader.py
 
--For favorites scraping
+- For favorites scraping
 
 python3 nh_downloader.py --favorites
 
