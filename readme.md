@@ -47,6 +47,6 @@ There is further info inside nh_downloader.py
 
 ## This is AI slop! Sorry!
 
-## Liscense
+## License
 
 MIT
