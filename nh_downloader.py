@@ -103,9 +103,8 @@ class RateLimiter:
             time.sleep(self.min_interval - elapsed)
         self.last_request_time = time.time()
 
-search_limiter = RateLimiter(min_interval=3.0)     # 20/min
-favorites_limiter = RateLimiter(min_interval=4.0)  # 15/min
-general_limiter = RateLimiter(min_interval=1.5)    # 45/min (safe margin)
+search_limiter = RateLimiter(min_interval=2.0)   # 30/min
+general_limiter = RateLimiter(min_interval=1.0)  # 60/min
 
 # ---------- Retry helper ----------
 def request_with_retry(method, url, headers=None, json=None, max_retries=3, limiter=None):
@@ -208,7 +207,6 @@ def load_config():
             "max_concurrent_downloads": 3,
             "download_dir": "./downloads",
             "favorites_download_dir": "./favorites",
-            "favorites_max_pages": 0,
             "delay_between_galleries": 1,
             "per_page": 25,
             "dry_run": False,
@@ -219,7 +217,6 @@ def load_config():
         print("\n# Notes:")
         print("# - 'queries' supports search syntax (https://nhentai.net/info). Each query is processed sequentially.")
         print("# - 'consecutive_skipped_limit': stop after N skipped galleries in a row. 0 = unlimited.")
-        print("# - 'favorites_max_pages' is redundant (the skip list already stops when hitting already downloaded favorites).")
         print("# - 'delay_between_galleries' adds a pause after each gallery download, even with 1s delay we will be rate limited anyway.")
         sys.exit(1)
     if DEBUG: print("DEBUG: Config file found, loading...")
@@ -250,7 +247,7 @@ def search_galleries(query, page, per_page, sort="date", api_key=None):
 def get_favorites(page, per_page, api_key=None):
     url = f"https://nhentai.net/api/v2/favorites?page={page}&per_page={per_page}"
     headers = get_auth_headers(api_key)
-    resp = request_with_retry('GET', url, headers=headers, limiter=favorites_limiter)
+    resp = request_with_retry('GET', url, headers=headers, limiter=search_limiter)
     return resp.json()
 
 def get_gallery_details(gallery_id, api_key=None):
@@ -470,7 +467,6 @@ def download_favorites(config):
     delay = config.get("delay_between_galleries", 1)
     per_page = min(config.get("per_page", 25), 100)
     dry_run = config.get("dry_run", False)
-    max_pages = config.get("favorites_max_pages", 0)
     consecutive_skipped_limit = config.get("favorites_consecutive_skipped_limit", 0)
     add_upload_date = config.get("add_upload_date", False)
 
@@ -485,9 +481,6 @@ def download_favorites(config):
     total_downloaded = 0
     consecutive_skipped = 0
     while True:
-        if max_pages > 0 and page > max_pages:
-            print(f"Reached max pages limit ({max_pages}). Stopping.")
-            break
         print(f"📄 Fetching favorites page {page}...")
         try:
             data = get_favorites(page, per_page, api_key)
