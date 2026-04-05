@@ -112,8 +112,9 @@ class RateLimiter:
             time.sleep(self.min_interval - elapsed)
         self.last_request_time = time.time()
 
-search_limiter = RateLimiter(min_interval=2.0)   # 30/min
-general_limiter = RateLimiter(min_interval=1.0)  # 60/min
+search_limiter = RateLimiter(min_interval=3.0)   # 20/min
+general_limiter = RateLimiter(min_interval=1.5)  # 30/min
+favorites_limiter = RateLimiter(min_interval=4.0)  # 15/min
 
 # ---------- Retry helper ----------
 def request_with_retry(method, url, headers=None, json=None, max_retries=3, limiter=None):
@@ -255,7 +256,7 @@ def search_galleries(query, page, sort="date", api_key=None):
 def get_favorites(page, api_key=None):
     url = f"https://nhentai.net/api/v2/favorites?page={page}"
     headers = get_auth_headers(api_key)
-    resp = request_with_retry('GET', url, headers=headers, limiter=search_limiter)
+    resp = request_with_retry('GET', url, headers=headers, limiter=favorites_limiter)
     return resp.json()
 
 def get_gallery_details(gallery_id, api_key=None):
@@ -570,7 +571,7 @@ def run_queries(config):
 
         if not stop_at_first:
             try:
-                data = search_galleries(query, 1, 1, api_key=api_key)
+                data = search_galleries(query, 1, api_key=api_key)
                 total_count = data.get('total', 0)
                 if total_count is None:
                     total_count = 0
