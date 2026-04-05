@@ -103,8 +103,9 @@ class RateLimiter:
             time.sleep(self.min_interval - elapsed)
         self.last_request_time = time.time()
 
-search_limiter = RateLimiter(min_interval=2.0)   # 30/min
-general_limiter = RateLimiter(min_interval=1.0)  # 60/min
+search_limiter = RateLimiter(min_interval=3.0)     # 20/min
+favorites_limiter = RateLimiter(min_interval=4.0)  # 15/min
+general_limiter = RateLimiter(min_interval=1.5)    # 45/min (safe margin)
 
 # ---------- Retry helper ----------
 def request_with_retry(method, url, headers=None, json=None, max_retries=3, limiter=None):
@@ -249,13 +250,7 @@ def search_galleries(query, page, per_page, sort="date", api_key=None):
 def get_favorites(page, per_page, api_key=None):
     url = f"https://nhentai.net/api/v2/favorites?page={page}&per_page={per_page}"
     headers = get_auth_headers(api_key)
-    resp = request_with_retry('GET', url, headers=headers, limiter=search_limiter)
-    return resp.json()
-
-def get_gallery_pages(gallery_id, api_key=None):
-    url = f"https://nhentai.net/api/v2/galleries/{gallery_id}/pages"
-    headers = get_auth_headers(api_key)
-    resp = request_with_retry('GET', url, headers=headers, limiter=general_limiter)
+    resp = request_with_retry('GET', url, headers=headers, limiter=favorites_limiter)
     return resp.json()
 
 def get_gallery_details(gallery_id, api_key=None):
@@ -375,36 +370,35 @@ def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery
         folder_path.mkdir(parents=True, exist_ok=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fetch full gallery details if needed for missing tags or upload date
-    full_gallery = None
-    missing_tags = [tid for tid in gallery_listing.get('tag_ids', []) if not get_tag_name_by_id(tid)]
-    if missing_tags or add_upload_date:
-        print(f"  Fetching full gallery details...")
-        try:
-            full_gallery = get_gallery_details(gallery_id, api_key)
-            update_cache_from_gallery(gallery_id, full_gallery)
-        except Exception as e:
-            print(f"  Warning: Could not fetch gallery details: {e}")
+    # Always fetch full gallery details (now includes pages)
+    print(f"  Fetching gallery details...")
+    try:
+        full_gallery = get_gallery_details(gallery_id, api_key)
+        update_cache_from_gallery(gallery_id, full_gallery)
+    except Exception as e:
+        print(f"  Warning: Could not fetch gallery details: {e}")
+        return False
 
     # Extract upload date if requested
     year = month = day = None
-    if add_upload_date and full_gallery:
+    if add_upload_date:
         upload_ts = full_gallery.get('upload_date')
         if upload_ts:
             dt = datetime.fromtimestamp(upload_ts)
             year, month, day = dt.year, dt.month, dt.day
             print(f"  Upload date: {year}-{month:02d}-{day:02d}")
 
-    pages_data = get_gallery_pages(gallery_id, api_key)
-    pages = pages_data.get('pages', [])
+    # Pages are now inside full_gallery
+    pages = full_gallery.get('pages', [])
     if not pages:
+        print(f"  No pages found for gallery {gallery_id}")
         return False
 
     if dry_run:
         print(f"  [DRY RUN] Would download {len(pages)} images and create CBZ at {cbz_path}")
         return True
 
-    # Prepare download tasks
+    # Prepare download tasks (use page 'path' field)
     image_tasks = []
     for idx, page in enumerate(pages, 1):
         path = page['path']
@@ -433,7 +427,6 @@ def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery
                         image_paths.append(image_tasks[idx][1])
                     else:
                         failed = True
-                        # Cancel remaining futures to stop further downloads
                         for f in future_to_idx:
                             f.cancel()
                         break
