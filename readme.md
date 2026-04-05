@@ -24,6 +24,10 @@ Will slot in replace 9-FS/nhentai_archivist if you are using that to archive, us
 
 git clone https://github.com/HerptyDerpoty/CustomNHD  
 cd CustomNHD  
+
+Then
+
+
 pip install requests tqdm
 
 - On Debian/Ubuntu:
