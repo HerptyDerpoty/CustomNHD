@@ -20,9 +20,18 @@ import argparse
 import concurrent.futures
 import requests
 import xml.sax.saxutils
+import signal
 from pathlib import Path
 from datetime import datetime
 from tqdm import tqdm
+
+# ================= GRACEFUL EXIT =================
+
+def signal_handler(sig, frame):
+    print("\n⚠️ Interrupted by user. Exiting gracefully...")
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
 
 # ========== CONSTANTS ==========
 DEBUG = False
@@ -208,7 +217,6 @@ def load_config():
             "download_dir": "./downloads",
             "favorites_download_dir": "./favorites",
             "delay_between_galleries": 1,
-            "per_page": 25,
             "dry_run": False,
             "stop_at_first": False,
             "add_upload_date": True,
@@ -238,14 +246,14 @@ def get_auth_headers(api_key=None):
         headers["Authorization"] = f"Key {api_key}"
     return headers
 
-def search_galleries(query, page, per_page, sort="date", api_key=None):
-    url = f"https://nhentai.net/api/v2/search?query={requests.utils.quote(query)}&page={page}&per_page={per_page}&sort={sort}"
+def search_galleries(query, page, sort="date", api_key=None):
+    url = f"https://nhentai.net/api/v2/search?query={requests.utils.quote(query)}&page={page}&sort={sort}"
     headers = get_auth_headers(api_key)
     resp = request_with_retry('GET', url, headers=headers, limiter=search_limiter)
     return resp.json()
 
-def get_favorites(page, per_page, api_key=None):
-    url = f"https://nhentai.net/api/v2/favorites?page={page}&per_page={per_page}"
+def get_favorites(page, api_key=None):
+    url = f"https://nhentai.net/api/v2/favorites?page={page}"
     headers = get_auth_headers(api_key)
     resp = request_with_retry('GET', url, headers=headers, limiter=search_limiter)
     return resp.json()
@@ -465,7 +473,6 @@ def download_favorites(config):
     download_dir = config.get("favorites_download_dir", "./favorites")
     max_concurrent = config.get("max_concurrent_downloads", 3)
     delay = config.get("delay_between_galleries", 1)
-    per_page = min(config.get("per_page", 25), 100)
     dry_run = config.get("dry_run", False)
     consecutive_skipped_limit = config.get("favorites_consecutive_skipped_limit", 0)
     add_upload_date = config.get("add_upload_date", False)
@@ -483,7 +490,7 @@ def download_favorites(config):
     while True:
         print(f"📄 Fetching favorites page {page}...")
         try:
-            data = get_favorites(page, per_page, api_key)
+            data = get_favorites(page, api_key)
         except Exception as e:
             print(f"Error fetching page {page}: {e}")
             break
@@ -534,7 +541,6 @@ def run_queries(config):
     max_concurrent = config.get("max_concurrent_downloads", 3)
     download_dir = config.get("download_dir", "./downloads")
     delay = config.get("delay_between_galleries", 1)
-    per_page = min(config.get("per_page", 25), 100)
     dry_run = config.get("dry_run", False)
     stop_at_first = config.get("stop_at_first", False)
     api_key = config.get("api_key", None)
@@ -580,7 +586,7 @@ def run_queries(config):
         while not stop_query:
             print(f"\n📄 Fetching page {page} for query...")
             try:
-                data = search_galleries(query, page, per_page, api_key=api_key)
+                data = search_galleries(query, page, api_key=api_key)
             except Exception as e:
                 print(f"Error fetching page {page}: {e}")
                 break
