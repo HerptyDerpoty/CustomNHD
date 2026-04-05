@@ -13,7 +13,6 @@ Will slot in replace 9-FS/nhentai_archivist if you are using that to archive, us
 - Retries on network errors and 429 responses
 - Outputs CBZ files with ComicInfo.xml
 - Keeps skip lists to avoid re-downloading
-- Atomic writes with backup for skip lists
 
 ## Requirements
 
