@@ -113,7 +113,7 @@ class RateLimiter:
         self.last_request_time = time.time()
 
 search_limiter = RateLimiter(min_interval=3.0)   # 20/min
-general_limiter = RateLimiter(min_interval=1.5)  # 30/min
+general_limiter = RateLimiter(min_interval=1.5)  # 40/min
 favorites_limiter = RateLimiter(min_interval=4.0)  # 15/min
 
 # ---------- Retry helper ----------
