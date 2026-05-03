@@ -2,6 +2,7 @@
 """
 nhentai downloader – multi‑query search OR download favorites.
 Uses the new /galleries/{id}/download endpoint (CBZ) with rate limiting.
+Extracts metadata from the included meta.json (or falls back to API).
 """
 
 import os
@@ -39,15 +40,19 @@ if DEBUG: print("DEBUG: Script started, imports loaded")
 
 # ---------- JSON helpers with backup and atomic write ----------
 def load_json_with_backup(file_path):
-    """Load JSON from primary; fallback to backup; exit if both corrupt."""
+    """
+    Load JSON from primary file; if corrupt, try backup.
+    If both are non‑empty and corrupt, exit (panic).
+    If both missing/empty, return empty set (first run).
+    """
     primary = file_path
     backup = file_path + ".bak"
 
     def try_load(path):
         if not os.path.exists(path):
-            return None
+            return None  # missing
         if os.path.getsize(path) == 0:
-            return None
+            return None  # empty
         try:
             with open(path, 'r') as f:
                 data = json.load(f)
@@ -55,7 +60,7 @@ def load_json_with_backup(file_path):
                 return set(data)
             return None
         except (json.JSONDecodeError, OSError):
-            return None
+            return None  # corrupt
 
     result = try_load(primary)
     if result is not None:
@@ -68,9 +73,10 @@ def load_json_with_backup(file_path):
             print(f"❌ FATAL: {path} is corrupted (invalid JSON). Cannot continue.")
             print("Please manually restore from backup or delete the file to start fresh.")
             sys.exit(1)
-    return set()
+    return set()  # first run
 
 def save_json_with_backup(data_set, file_path):
+    """Atomically write JSON to primary, then copy to backup."""
     primary = file_path
     backup = file_path + ".bak"
     temp = file_path + ".tmp"
@@ -92,13 +98,18 @@ class RateLimiter:
             time.sleep(self.min_interval - elapsed)
         self.last_request_time = time.time()
 
-search_limiter = RateLimiter(min_interval=3.0)      # 20/min
-favorites_limiter = RateLimiter(min_interval=4.0)   # 15/min
-general_limiter = RateLimiter(min_interval=1.5)     # 45/min (safe margin)
-download_limiter = RateLimiter(min_interval=42.86)  # 7 per 5 minutes (300/7 ≈ 42.86s)
+# Rate limiters for different endpoint groups (based on tightened API limits)
+search_limiter = RateLimiter(min_interval=3.0)      # search: 20/min → 3s
+favorites_limiter = RateLimiter(min_interval=4.0)   # favorites: 15/min → 4s
+general_limiter = RateLimiter(min_interval=1.5)     # gallery details: 45/min → 1.5s
+download_limiter = RateLimiter(min_interval=42.86)  # download endpoint: 7 per 5 min → 300/7 ≈ 42.86s
 
 # ---------- Retry helper ----------
 def request_with_retry(method, url, headers=None, json=None, max_retries=3, limiter=None):
+    """
+    Make a request with retries on errors/429.
+    If a limiter is provided, it enforces a minimum interval between calls.
+    """
     if limiter:
         limiter.wait_if_needed()
     headers = headers or {}
@@ -131,7 +142,8 @@ def load_tag_cache():
         print(f"⚠️ Tag cache '{TAG_CACHE_FILE}' not found. Starting empty (will auto‑populate).")
         return {}, {}
     with open(TAG_CACHE_FILE, 'r') as f:
-        tag_cache = json.load(f)
+        tag_cache = json.load(f)   # tag_id -> {"type": "...", "name": "..."}
+    # Build reverse index for fast name→id lookup
     name_to_id = {}
     for tid, info in tag_cache.items():
         key = f"{info['type']}:{info['name'].lower()}"
@@ -147,8 +159,11 @@ TAG_CACHE, NAME_TO_ID = load_tag_cache()
 def get_tag_name_by_id(tag_id):
     return TAG_CACHE.get(str(tag_id), {}).get("name")
 
-def update_cache_from_gallery(gallery_id, gallery_full):
-    tags = gallery_full.get('tags', [])
+def update_cache_from_tags(tags):
+    """
+    Update tag cache using a list of tag dicts (each with id, type, name).
+    Returns number of new tags added.
+    """
     added = 0
     for tag in tags:
         tid = str(tag['id'])
@@ -159,7 +174,6 @@ def update_cache_from_gallery(gallery_id, gallery_full):
             added += 1
     if added:
         save_tag_cache(TAG_CACHE)
-        print(f"  Added {added} new tags to cache (gallery {gallery_id})")
     return added
 
 # ---------- Skip lists ----------
@@ -194,7 +208,7 @@ def load_config():
             "queries": ["tag -tag tag", "tag -tag -tag tag"],
             "consecutive_skipped_limit": 100,
             "favorites_consecutive_skipped_limit": 100,
-            "max_concurrent_downloads": 3,   # not used with new endpoint, kept for compatibility
+            "max_concurrent_downloads": 3,   # not used but kept for compatibility
             "download_dir": "./downloads",
             "favorites_download_dir": "./favorites",
             "delay_between_galleries": 1,
@@ -213,7 +227,7 @@ def load_config():
         return json.load(f)
 
 def get_cdn_base():
-    # Still needed for any legacy paths? Not used in new download method, but kept for safety.
+    """(Legacy) Get CDN base URL – not actually used by the new download endpoint, but kept for compatibility."""
     resp = request_with_retry('GET', "https://nhentai.net/api/v2/cdn", headers={"User-Agent": USER_AGENT}, limiter=general_limiter)
     data = resp.json()
     server = data.get("image_servers", ["i.nhentai.net"])[0]
@@ -229,25 +243,29 @@ def get_auth_headers(api_key=None):
     return headers
 
 def search_galleries(query, page, sort="date", api_key=None):
+    """Search endpoint (public)."""
     url = f"https://nhentai.net/api/v2/search?query={requests.utils.quote(query)}&page={page}&sort={sort}"
     headers = get_auth_headers(api_key)
     resp = request_with_retry('GET', url, headers=headers, limiter=search_limiter)
     return resp.json()
 
 def get_favorites(page, api_key=None):
+    """Favorites endpoint (requires API key)."""
     url = f"https://nhentai.net/api/v2/favorites?page={page}"
     headers = get_auth_headers(api_key)
     resp = request_with_retry('GET', url, headers=headers, limiter=favorites_limiter)
     return resp.json()
 
 def get_gallery_details(gallery_id, api_key=None):
+    """Fallback gallery details endpoint (used only if meta.json is missing)."""
     url = f"https://nhentai.net/api/v2/galleries/{gallery_id}"
     headers = get_auth_headers(api_key)
     resp = request_with_retry('GET', url, headers=headers, limiter=general_limiter)
     return resp.json()
 
-# ---------- Helper functions for filenames and XML ----------
+# ---------- Filename and XML helpers ----------
 def safe_filename(text, max_bytes=200):
+    """Truncate a UTF‑8 string to max_bytes to avoid filesystem limits."""
     encoded = text.encode('utf-8')
     if len(encoded) <= max_bytes:
         return text
@@ -262,6 +280,11 @@ def escape_xml(text):
     return xml.sax.saxutils.escape(str(text))
 
 def create_comic_info_xml(gallery_info, api_key=None, year=None, month=None, day=None):
+    """
+    Generate ComicInfo.xml from a gallery listing and optional upload date.
+    Tags are separated by type: artist→<Writer>, group→<Publisher>,
+    category→<Genre>, everything else→<Tags> with capitalized type prefix.
+    """
     original_title = gallery_info.get('english_title') or gallery_info.get('japanese_title') or f"Gallery {gallery_info['id']}"
     pages = gallery_info.get('num_pages', 0)
     tag_ids = gallery_info.get('tag_ids', [])
@@ -317,8 +340,13 @@ def create_comic_info_xml(gallery_info, api_key=None, year=None, month=None, day
     xml_parts.append('</ComicInfo>')
     return '\n'.join(xml_parts)
 
-# ---------- Gallery download using the new endpoint ----------
+# ---------- Gallery download using the new /download endpoint ----------
 def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery_listing, max_workers, api_key=None, add_upload_date=False):
+    """
+    Download a gallery using the new POST /galleries/{id}/download?format=cbz endpoint.
+    Extracts meta.json from the CBZ to get tags and upload date.
+    Falls back to the legacy API if meta.json is missing.
+    """
     english_title = gallery_listing.get('english_title')
     if not english_title:
         english_title = str(gallery_id)
@@ -335,12 +363,12 @@ def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery
         folder_path.mkdir(parents=True, exist_ok=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Request a signed download URL
+    # Step 1: Request a signed download URL
     print(f"  Requesting download URL...")
     url = f"https://nhentai.net/api/v2/galleries/{gallery_id}/download?format=cbz"
     headers = get_auth_headers(api_key)
     try:
-        download_limiter.wait_if_needed()
+        download_limiter.wait_if_needed()  # enforce 7 per 5 minutes
         resp = request_with_retry('POST', url, headers=headers, json=None, limiter=None)
         if resp.status_code != 200:
             print(f"  Failed to get download URL: {resp.status_code}")
@@ -357,7 +385,7 @@ def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery
         print(f"  Error getting download URL: {e}")
         return False
 
-    # Download the CBZ file
+    # Step 2: Download the CBZ file
     print(f"  Downloading CBZ...")
     try:
         dl_resp = requests.get(download_url, stream=True, timeout=60)
@@ -377,13 +405,13 @@ def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery
         shutil.rmtree(temp_dir, ignore_errors=True)
         return True
 
-    # Extract the downloaded CBZ
+    # Step 3: Extract the CBZ
     extract_dir = temp_dir / "extract"
     extract_dir.mkdir(exist_ok=True)
     with zipfile.ZipFile(temp_cbz, 'r') as zin:
         zin.extractall(extract_dir)
 
-    # Look for meta.json / info.json
+    # Step 4: Look for metadata file (meta.json or info.json)
     meta_path = None
     for candidate in ['meta.json', 'info.json']:
         p = extract_dir / candidate
@@ -392,33 +420,22 @@ def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery
             break
 
     if meta_path:
-        # Use metadata from the zip
+        print(f"  Using {meta_path.name} for metadata")
         with open(meta_path, 'r', encoding='utf-8') as f:
             meta = json.load(f)
-        # Extract tags and upload date
         tags = meta.get('tags', [])
         upload_ts = meta.get('upload_date')
         # Update tag cache
-        added = 0
-        for tag in tags:
-            tid = str(tag['id'])
-            if tid not in TAG_CACHE:
-                TAG_CACHE[tid] = {"type": tag['type'], "name": tag['name']}
-                key = f"{tag['type']}:{tag['name'].lower()}"
-                NAME_TO_ID[key] = tag['id']
-                added += 1
+        added = update_cache_from_tags(tags)
         if added:
-            save_tag_cache(TAG_CACHE)
-            print(f"  Added {added} new tags to cache from meta.json")
+            print(f"  Added {added} new tags to cache")
         # Prepare upload date
         year = month = day = None
         if add_upload_date and upload_ts:
             dt = datetime.fromtimestamp(upload_ts)
             year, month, day = dt.year, dt.month, dt.day
             print(f"  Upload date: {year}-{month:02d}-{day:02d}")
-        # Create a gallery_listing-like object for ComicInfo.xml using meta data
-        # We'll use the original gallery_listing for title, but tags come from meta
-        # Actually we can reuse the same gallery_listing, but we need tag_ids from meta
+        # Build a modified gallery_listing with correct tag_ids and num_pages
         gallery_listing_with_meta = gallery_listing.copy()
         gallery_listing_with_meta['tag_ids'] = [tag['id'] for tag in tags]
         gallery_listing_with_meta['num_pages'] = meta.get('num_pages', 0)
@@ -428,7 +445,8 @@ def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery
         print(f"  meta.json not found, falling back to API call...")
         try:
             full_gallery = get_gallery_details(gallery_id, api_key)
-            update_cache_from_gallery(gallery_id, full_gallery)
+            # Update tag cache from API response
+            update_cache_from_tags(full_gallery.get('tags', []))
             upload_ts = full_gallery.get('upload_date') if add_upload_date else None
             year = month = day = None
             if upload_ts:
@@ -439,17 +457,17 @@ def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery
             print(f"  Fallback failed: {e}")
             return False
 
-    # Remove any original ComicInfo.xml from the downloaded archive
+    # Step 5: Remove any existing ComicInfo.xml from the downloaded archive
     orig_xml = extract_dir / "ComicInfo.xml"
     if orig_xml.exists():
         orig_xml.unlink()
 
-    # Write our ComicInfo.xml
+    # Step 6: Write our ComicInfo.xml
     xml_path = extract_dir / "ComicInfo.xml"
     with open(xml_path, 'w', encoding='utf-8') as f:
         f.write(xml_content)
 
-    # Rebuild the CBZ
+    # Step 7: Rebuild the CBZ
     with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as zout:
         for root, dirs, files in os.walk(extract_dir):
             for file in files:
@@ -457,19 +475,19 @@ def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery
                 arcname = os.path.relpath(full_path, extract_dir)
                 zout.write(full_path, arcname)
 
-    # Cleanup
+    # Step 8: Cleanup temporary directory
     shutil.rmtree(temp_dir)
     print(f"  ✅ Created CBZ: {cbz_path}")
     return True
 
 # ---------- Favorites downloader ----------
 def download_favorites(config):
+    """Favorites mode: fetch all favorite gallery IDs, then download them."""
     api_key = config.get("api_key")
     if not api_key:
         print("❌ API key required for favorites mode. Add 'api_key' to config file.")
         sys.exit(1)
     download_dir = config.get("favorites_download_dir", "./favorites")
-    max_concurrent = config.get("max_concurrent_downloads", 3)  # kept for compatibility
     delay = config.get("delay_between_galleries", 1)
     dry_run = config.get("dry_run", False)
     consecutive_skipped_limit = config.get("favorites_consecutive_skipped_limit", 0)
@@ -478,11 +496,11 @@ def download_favorites(config):
     if dry_run:
         print("🚀 DRY RUN MODE – no files will be written\n")
 
-    base_url = get_cdn_base()  # not used but kept
     print("🔑 Using API key to fetch favorites\n")
 
+    to_download = []  # list of (gallery_id, gallery_listing)
+
     page = 1
-    total_downloaded = 0
     consecutive_skipped = 0
     while True:
         print(f"📄 Fetching favorites page {page}...")
@@ -496,6 +514,7 @@ def download_favorites(config):
             print("No more favorites found.")
             break
 
+        # Filter out already downloaded favorites
         new_favorites = [fav for fav in favorites if fav['id'] not in FAVORITES_DOWNLOADED]
         skipped_this_page = len(favorites) - len(new_favorites)
         if skipped_this_page > 0:
@@ -510,31 +529,41 @@ def download_favorites(config):
 
         print(f"  Found {len(favorites)} favorites, {len(new_favorites)} new.")
         for fav in new_favorites:
-            gid = fav['id']
-            title = fav.get('english_title') or fav.get('japanese_title') or str(gid)
-            print(f"\n🎯 {title} (ID: {gid})")
-            if download_gallery(gid, title, base_url, download_dir, dry_run, fav, max_concurrent, api_key, add_upload_date):
-                total_downloaded += 1
-                add_to_favorites_cache(gid)
-                consecutive_skipped = 0
-            else:
-                print(f"❌ Failed {title}")
-            time.sleep(delay)
+            to_download.append((fav['id'], fav))
+            print(f"  Added ID {fav['id']} to download queue")
 
         if page >= data.get('num_pages', 0):
             break
         page += 1
 
+    if not to_download:
+        print("No new favorites to download.")
+        return
+
+    base_url = get_cdn_base()  # not used, but required for function signature
+    print(f"\n📥 Downloading {len(to_download)} new favorites (rate limited to 7 per 5 minutes)...")
+    total_downloaded = 0
+    for idx, (gid, fav) in enumerate(to_download, 1):
+        title = fav.get('english_title') or fav.get('japanese_title') or str(gid)
+        print(f"\n🎯 [{idx}/{len(to_download)}] {title} (ID: {gid})")
+        if download_gallery(gid, title, base_url, download_dir, dry_run, fav, config.get("max_concurrent_downloads", 3), api_key, add_upload_date):
+            total_downloaded += 1
+            add_to_favorites_cache(gid)
+        else:
+            print(f"❌ Failed {title}")
+        if idx < len(to_download):
+            time.sleep(delay)
+
     print(f"\n✨ Favorites download complete! Downloaded {total_downloaded} new favorites to {download_dir}")
 
 # ---------- Normal query mode ----------
 def run_queries(config):
+    """Normal mode: process search queries, collect gallery IDs, then download."""
     queries = config.get("queries")
     if not queries or not isinstance(queries, list):
         print("❌ 'queries' must be a non‑empty list in config for normal mode.")
         sys.exit(1)
     consecutive_skipped_limit = config.get("consecutive_skipped_limit", 0)
-    max_concurrent = config.get("max_concurrent_downloads", 3)
     download_dir = config.get("download_dir", "./downloads")
     delay = config.get("delay_between_galleries", 1)
     dry_run = config.get("dry_run", False)
@@ -552,7 +581,8 @@ def run_queries(config):
     else:
         print("🔓 No API key – using public endpoints (lower rate limits)")
 
-    total_downloaded = 0
+    # Collect galleries to download
+    to_download = []  # list of (gallery_id, gallery_listing)
 
     for qidx, query in enumerate(queries, 1):
         print(f"\n{'='*60}")
@@ -560,10 +590,11 @@ def run_queries(config):
         print(f"{'='*60}")
 
         page = 1
-        query_downloaded = 0
+        query_found = 0
         consecutive_skipped = 0
         stop_query = False
 
+        # Optional progress bar for the whole query
         if not stop_at_first:
             try:
                 data = search_galleries(query, 1, api_key=api_key)
@@ -605,23 +636,15 @@ def run_queries(config):
                 else:
                     consecutive_skipped = 0
 
-                title = gal.get('english_title') or gal.get('japanese_title') or str(gid)
-                print(f"\n🎯 {title} (ID: {gid})")
-                if download_gallery(gid, title, base_url, download_dir, dry_run, gal, max_concurrent, api_key, add_upload_date):
-                    query_downloaded += 1
-                    total_downloaded += 1
-                    add_to_skip_list(gid)
-                else:
-                    print(f"❌ Failed {title}")
-
+                # New gallery found – add to download list
+                to_download.append((gid, gal))
+                query_found += 1
                 if pbar:
                     pbar.update(1)
 
                 if stop_at_first:
                     stop_query = True
                     break
-
-                time.sleep(delay)
 
             if stop_query:
                 break
@@ -632,9 +655,26 @@ def run_queries(config):
 
         if pbar:
             pbar.close()
-        print(f"✅ Query finished. Downloaded {query_downloaded} new galleries.")
+        print(f"✅ Query finished. Found {query_found} new galleries to download.")
 
-    print(f"\n✨ All queries done! Total downloaded: {total_downloaded} CBZ file(s) in {download_dir}")
+    if not to_download:
+        print("\nNo new galleries to download.")
+        return
+
+    print(f"\n📥 Downloading {len(to_download)} new galleries (rate limited to 7 per 5 minutes)...")
+    total_downloaded = 0
+    for idx, (gid, gal) in enumerate(to_download, 1):
+        title = gal.get('english_title') or gal.get('japanese_title') or str(gid)
+        print(f"\n🎯 [{idx}/{len(to_download)}] {title} (ID: {gid})")
+        if download_gallery(gid, title, base_url, download_dir, dry_run, gal, config.get("max_concurrent_downloads", 3), api_key, add_upload_date):
+            total_downloaded += 1
+            add_to_skip_list(gid)
+        else:
+            print(f"❌ Failed {title}")
+        if idx < len(to_download):
+            time.sleep(delay)
+
+    print(f"\n✨ All queries done! Downloaded {total_downloaded} CBZ file(s) in {download_dir}")
 
 # ---------- Main ----------
 def main():
