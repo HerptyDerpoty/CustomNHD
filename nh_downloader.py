@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 """
-nhentai downloader multi-query search OR download favorites.
-Features: rate limiting, concurrency, skip lists, upload date addition.
-Now with atomic JSON writes and automatic backup/restore of skip lists.
-
-run as a cronjob! example!
-
-0 */2 * * * cd /your/dir && /usr/bin/python3 nh_downloader.py >> /your/dir/archive.log 2>&1
-30 */2 * * * cd /your/dir && /usr/bin/python3 nh_downloader.py --favorites >> /your/dir/favorites.log 2>&1
+nhentai downloader – multi‑query search OR download favorites.
+Uses the new /galleries/{id}/download endpoint (CBZ) with rate limiting.
 """
 
 import os
@@ -26,7 +20,6 @@ from datetime import datetime
 from tqdm import tqdm
 
 # ================= GRACEFUL EXIT =================
-
 def signal_handler(sig, frame):
     print("\n⚠️ Interrupted by user. Exiting gracefully...")
     sys.exit(0)
@@ -46,15 +39,15 @@ if DEBUG: print("DEBUG: Script started, imports loaded")
 
 # ---------- JSON helpers with backup and atomic write ----------
 def load_json_with_backup(file_path):
-    """Load JSON from primary; fallback to backup; exit if both corrupt (nonempty malformed)."""
+    """Load JSON from primary; fallback to backup; exit if both corrupt."""
     primary = file_path
     backup = file_path + ".bak"
 
     def try_load(path):
         if not os.path.exists(path):
-            return None  # missing
+            return None
         if os.path.getsize(path) == 0:
-            return None  # empty
+            return None
         try:
             with open(path, 'r') as f:
                 data = json.load(f)
@@ -62,41 +55,28 @@ def load_json_with_backup(file_path):
                 return set(data)
             return None
         except (json.JSONDecodeError, OSError):
-            return None  # corrupt
+            return None
 
-    # Try primary
     result = try_load(primary)
     if result is not None:
         return result
-
-    # Primary missing/empty/corrupt → try backup
     result = try_load(backup)
     if result is not None:
-        # Optional: restore primary from backup here? Not needed; next save will overwrite.
         return result
-
-    # Both primary and backup are missing, empty, or corrupt.
-    # Check if either exists and is non‑empty but corrupt → panic
     for path in [primary, backup]:
         if os.path.exists(path) and os.path.getsize(path) > 0:
             print(f"❌ FATAL: {path} is corrupted (invalid JSON). Cannot continue.")
             print("Please manually restore from backup or delete the file to start fresh.")
             sys.exit(1)
-    # Neither file exists or both are empty → first run
     return set()
 
 def save_json_with_backup(data_set, file_path):
-    """Atomically write JSON to primary file, then copy to backup."""
     primary = file_path
     backup = file_path + ".bak"
     temp = file_path + ".tmp"
-
-    # Write to temporary file first
     with open(temp, 'w') as f:
         json.dump(sorted(data_set), f, indent=2)
-    # Atomic rename (works on Unix/Windows)
     os.replace(temp, primary)
-    # Copy to backup
     shutil.copy2(primary, backup)
 
 # ---------- Rate Limiter ----------
@@ -112,9 +92,10 @@ class RateLimiter:
             time.sleep(self.min_interval - elapsed)
         self.last_request_time = time.time()
 
-search_limiter = RateLimiter(min_interval=3.0)   # 20/min
-general_limiter = RateLimiter(min_interval=1.5)  # 40/min
-favorites_limiter = RateLimiter(min_interval=4.0)  # 15/min
+search_limiter = RateLimiter(min_interval=3.0)      # 20/min
+favorites_limiter = RateLimiter(min_interval=4.0)   # 15/min
+general_limiter = RateLimiter(min_interval=1.5)     # 45/min (safe margin)
+download_limiter = RateLimiter(min_interval=42.86)  # 7 per 5 minutes (300/7 ≈ 42.86s)
 
 # ---------- Retry helper ----------
 def request_with_retry(method, url, headers=None, json=None, max_retries=3, limiter=None):
@@ -181,7 +162,7 @@ def update_cache_from_gallery(gallery_id, gallery_full):
         print(f"  Added {added} new tags to cache (gallery {gallery_id})")
     return added
 
-# ---------- Skip list (for queries) with backup ----------
+# ---------- Skip lists ----------
 def load_skip_ids():
     return load_json_with_backup(SKIP_FILE)
 
@@ -192,7 +173,6 @@ def add_to_skip_list(gallery_id):
 
 SKIP_IDS = load_skip_ids()
 
-# ---------- Favorites cache with backup ----------
 def load_favorites_cache():
     return load_json_with_backup(FAVORITES_CACHE_FILE)
 
@@ -205,8 +185,8 @@ FAVORITES_DOWNLOADED = load_favorites_cache()
 
 # ---------- Config loading ----------
 def load_config():
-    if DEBUG: print("DEBUG: Looking for config file: {CONFIG_FILE}")
-    if DEBUG: print("DEBUG: Current working directory: {os.getcwd()}")
+    if DEBUG: print(f"DEBUG: Looking for config file: {CONFIG_FILE}")
+    if DEBUG: print(f"DEBUG: Current working directory: {os.getcwd()}")
     if not os.path.exists(CONFIG_FILE):
         print(f"❌ Config file '{CONFIG_FILE}' not found.")
         print("Example config (copy the JSON below):")
@@ -214,7 +194,7 @@ def load_config():
             "queries": ["tag -tag tag", "tag -tag -tag tag"],
             "consecutive_skipped_limit": 100,
             "favorites_consecutive_skipped_limit": 100,
-            "max_concurrent_downloads": 3,
+            "max_concurrent_downloads": 3,   # not used with new endpoint, kept for compatibility
             "download_dir": "./downloads",
             "favorites_download_dir": "./favorites",
             "delay_between_galleries": 1,
@@ -226,13 +206,14 @@ def load_config():
         print("\n# Notes:")
         print("# - 'queries' supports search syntax (https://nhentai.net/info). Each query is processed sequentially.")
         print("# - 'consecutive_skipped_limit': stop after N skipped galleries in a row. 0 = unlimited.")
-        print("# - 'delay_between_galleries' adds a pause after each gallery download, even with 1s delay we will be rate limited anyway.")
+        print("# - 'delay_between_galleries' adds a pause after each gallery download.")
         sys.exit(1)
     if DEBUG: print("DEBUG: Config file found, loading...")
     with open(CONFIG_FILE, 'r') as f:
         return json.load(f)
 
 def get_cdn_base():
+    # Still needed for any legacy paths? Not used in new download method, but kept for safety.
     resp = request_with_retry('GET', "https://nhentai.net/api/v2/cdn", headers={"User-Agent": USER_AGENT}, limiter=general_limiter)
     data = resp.json()
     server = data.get("image_servers", ["i.nhentai.net"])[0]
@@ -240,7 +221,7 @@ def get_cdn_base():
         return f"https://{server}"
     return server.rstrip('/')
 
-# ---------- API calls with optional API key ----------
+# ---------- API calls ----------
 def get_auth_headers(api_key=None):
     headers = {"User-Agent": USER_AGENT}
     if api_key:
@@ -265,26 +246,7 @@ def get_gallery_details(gallery_id, api_key=None):
     resp = request_with_retry('GET', url, headers=headers, limiter=general_limiter)
     return resp.json()
 
-# ---------- Image download with retries and timeout ----------
-def download_image(img_url, save_path, max_retries=3):
-    headers = {"User-Agent": USER_AGENT}
-    for attempt in range(max_retries):
-        try:
-            resp = requests.get(img_url, headers=headers, stream=True, timeout=30)
-            resp.raise_for_status()
-            with open(save_path, 'wb') as f:
-                for chunk in resp.iter_content(8192):
-                    f.write(chunk)
-            return True
-        except Exception as e:
-            if attempt == max_retries - 1:
-                print(f"  Failed after {max_retries} attempts: {e}")
-                return False
-            print(f"  Retry {attempt+1}/{max_retries} for {img_url}")
-            time.sleep(2)
-    return False
-
-# ---------- Safe filename truncation ----------
+# ---------- Helper functions for filenames and XML ----------
 def safe_filename(text, max_bytes=200):
     encoded = text.encode('utf-8')
     if len(encoded) <= max_bytes:
@@ -294,7 +256,6 @@ def safe_filename(text, max_bytes=200):
 def capitalize_words(s):
     return ' '.join(word.capitalize() for word in s.split())
 
-# ---------- ComicInfo.xml ----------
 def escape_xml(text):
     if text is None:
         return ''
@@ -310,7 +271,6 @@ def create_comic_info_xml(gallery_info, api_key=None, year=None, month=None, day
     title = f"{gallery_id} {original_title}"
     series = title
 
-    # Collect tags by type
     tags_by_type = {}
     for tid in tag_ids:
         tinfo = TAG_CACHE.get(str(tid))
@@ -329,7 +289,6 @@ def create_comic_info_xml(gallery_info, api_key=None, year=None, month=None, day
             capitalized_name = capitalize_words(name)
             all_other_tags.append(f"{capitalized_type}: {capitalized_name}")
 
-    # Build XML parts with escaping
     xml_parts = [
         '<?xml version="1.0" encoding="utf-8"?>',
         '<ComicInfo xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
@@ -358,7 +317,7 @@ def create_comic_info_xml(gallery_info, api_key=None, year=None, month=None, day
     xml_parts.append('</ComicInfo>')
     return '\n'.join(xml_parts)
 
-# ---------- Gallery download (with concurrency and fail on missing image) ----------
+# ---------- Gallery download using the new endpoint ----------
 def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery_listing, max_workers, api_key=None, add_upload_date=False):
     english_title = gallery_listing.get('english_title')
     if not english_title:
@@ -376,91 +335,129 @@ def download_gallery(gallery_id, title, base_url, download_dir, dry_run, gallery
         folder_path.mkdir(parents=True, exist_ok=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Always fetch full gallery details (now includes pages)
-    print(f"  Fetching gallery details...")
+    # Request a signed download URL
+    print(f"  Requesting download URL...")
+    url = f"https://nhentai.net/api/v2/galleries/{gallery_id}/download?format=cbz"
+    headers = get_auth_headers(api_key)
     try:
-        full_gallery = get_gallery_details(gallery_id, api_key)
-        update_cache_from_gallery(gallery_id, full_gallery)
+        download_limiter.wait_if_needed()
+        resp = request_with_retry('POST', url, headers=headers, json=None, limiter=None)
+        if resp.status_code != 200:
+            print(f"  Failed to get download URL: {resp.status_code}")
+            return False
+        data = resp.json()
+        download_url = data.get('url')
+        if not download_url:
+            print("  No URL in response")
+            return False
+        expires_at = data.get('expires_at')
+        if expires_at:
+            print(f"  URL expires at {datetime.fromtimestamp(expires_at)}")
     except Exception as e:
-        print(f"  Warning: Could not fetch gallery details: {e}")
+        print(f"  Error getting download URL: {e}")
         return False
 
-    # Extract upload date if requested
-    year = month = day = None
-    if add_upload_date:
-        upload_ts = full_gallery.get('upload_date')
-        if upload_ts:
-            dt = datetime.fromtimestamp(upload_ts)
-            year, month, day = dt.year, dt.month, dt.day
-            print(f"  Upload date: {year}-{month:02d}-{day:02d}")
-
-    # Pages are now inside full_gallery
-    pages = full_gallery.get('pages', [])
-    if not pages:
-        print(f"  No pages found for gallery {gallery_id}")
+    # Download the CBZ file
+    print(f"  Downloading CBZ...")
+    try:
+        dl_resp = requests.get(download_url, stream=True, timeout=60)
+        dl_resp.raise_for_status()
+        temp_cbz = temp_dir / "downloaded.cbz"
+        with open(temp_cbz, 'wb') as f:
+            for chunk in dl_resp.iter_content(8192):
+                f.write(chunk)
+        size_mb = temp_cbz.stat().st_size / (1024*1024)
+        print(f"  Downloaded {size_mb:.1f} MB")
+    except Exception as e:
+        print(f"  Download failed: {e}")
         return False
 
     if dry_run:
-        print(f"  [DRY RUN] Would download {len(pages)} images and create CBZ at {cbz_path}")
+        print(f"  [DRY RUN] Would create CBZ at {cbz_path}")
+        shutil.rmtree(temp_dir, ignore_errors=True)
         return True
 
-    # Prepare download tasks (use page 'path' field)
-    image_tasks = []
-    for idx, page in enumerate(pages, 1):
-        path = page['path']
-        if not path.startswith('/'):
-            path = '/' + path
-        img_url = base_url + path
-        ext = img_url.split('.')[-1].split('?')[0]
-        if ext not in ('jpg','jpeg','png','gif','webp'):
-            ext = 'jpg'
-        save_path = temp_dir / f"{idx:03d}.{ext}"
-        image_tasks.append((img_url, save_path))
+    # Extract the downloaded CBZ
+    extract_dir = temp_dir / "extract"
+    extract_dir.mkdir(exist_ok=True)
+    with zipfile.ZipFile(temp_cbz, 'r') as zin:
+        zin.extractall(extract_dir)
 
-    # Download images concurrently, fail if any image fails
-    image_paths = []
-    failed = False
-    with tqdm(total=len(image_tasks), desc=f"Downloading {english_title[:30]}", unit="img", leave=False) as pbar:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_idx = {}
-            for idx, (img_url, save_path) in enumerate(image_tasks):
-                future = executor.submit(download_image, img_url, save_path)
-                future_to_idx[future] = idx
-            for future in concurrent.futures.as_completed(future_to_idx):
-                idx = future_to_idx[future]
-                try:
-                    if future.result():
-                        image_paths.append(image_tasks[idx][1])
-                    else:
-                        failed = True
-                        for f in future_to_idx:
-                            f.cancel()
-                        break
-                except Exception as e:
-                    print(f"  Error downloading image {idx+1}: {e}")
-                    failed = True
-                    for f in future_to_idx:
-                        f.cancel()
-                    break
-                pbar.update(1)
-                time.sleep(0.05)
+    # Look for meta.json / info.json
+    meta_path = None
+    for candidate in ['meta.json', 'info.json']:
+        p = extract_dir / candidate
+        if p.exists():
+            meta_path = p
+            break
 
-    if failed:
-        print(f"  ❌ Gallery {gallery_id} failed due to missing image(s). Not added to skip list.")
-        return False
+    if meta_path:
+        # Use metadata from the zip
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            meta = json.load(f)
+        # Extract tags and upload date
+        tags = meta.get('tags', [])
+        upload_ts = meta.get('upload_date')
+        # Update tag cache
+        added = 0
+        for tag in tags:
+            tid = str(tag['id'])
+            if tid not in TAG_CACHE:
+                TAG_CACHE[tid] = {"type": tag['type'], "name": tag['name']}
+                key = f"{tag['type']}:{tag['name'].lower()}"
+                NAME_TO_ID[key] = tag['id']
+                added += 1
+        if added:
+            save_tag_cache(TAG_CACHE)
+            print(f"  Added {added} new tags to cache from meta.json")
+        # Prepare upload date
+        year = month = day = None
+        if add_upload_date and upload_ts:
+            dt = datetime.fromtimestamp(upload_ts)
+            year, month, day = dt.year, dt.month, dt.day
+            print(f"  Upload date: {year}-{month:02d}-{day:02d}")
+        # Create a gallery_listing-like object for ComicInfo.xml using meta data
+        # We'll use the original gallery_listing for title, but tags come from meta
+        # Actually we can reuse the same gallery_listing, but we need tag_ids from meta
+        gallery_listing_with_meta = gallery_listing.copy()
+        gallery_listing_with_meta['tag_ids'] = [tag['id'] for tag in tags]
+        gallery_listing_with_meta['num_pages'] = meta.get('num_pages', 0)
+        xml_content = create_comic_info_xml(gallery_listing_with_meta, api_key, year, month, day)
+    else:
+        # Fallback: fetch gallery details via API
+        print(f"  meta.json not found, falling back to API call...")
+        try:
+            full_gallery = get_gallery_details(gallery_id, api_key)
+            update_cache_from_gallery(gallery_id, full_gallery)
+            upload_ts = full_gallery.get('upload_date') if add_upload_date else None
+            year = month = day = None
+            if upload_ts:
+                dt = datetime.fromtimestamp(upload_ts)
+                year, month, day = dt.year, dt.month, dt.day
+            xml_content = create_comic_info_xml(gallery_listing, api_key, year, month, day)
+        except Exception as e:
+            print(f"  Fallback failed: {e}")
+            return False
 
-    # Create ComicInfo.xml with date if available
-    xml_content = create_comic_info_xml(gallery_listing, api_key, year, month, day)
-    xml_path = temp_dir / "ComicInfo.xml"
+    # Remove any original ComicInfo.xml from the downloaded archive
+    orig_xml = extract_dir / "ComicInfo.xml"
+    if orig_xml.exists():
+        orig_xml.unlink()
+
+    # Write our ComicInfo.xml
+    xml_path = extract_dir / "ComicInfo.xml"
     with open(xml_path, 'w', encoding='utf-8') as f:
         f.write(xml_content)
 
-    # Create CBZ
-    with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as cbz:
-        for img_path in sorted(image_paths):
-            cbz.write(img_path, img_path.name)
-        cbz.write(xml_path, "ComicInfo.xml")
+    # Rebuild the CBZ
+    with zipfile.ZipFile(cbz_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+        for root, dirs, files in os.walk(extract_dir):
+            for file in files:
+                full_path = os.path.join(root, file)
+                arcname = os.path.relpath(full_path, extract_dir)
+                zout.write(full_path, arcname)
 
+    # Cleanup
     shutil.rmtree(temp_dir)
     print(f"  ✅ Created CBZ: {cbz_path}")
     return True
@@ -472,7 +469,7 @@ def download_favorites(config):
         print("❌ API key required for favorites mode. Add 'api_key' to config file.")
         sys.exit(1)
     download_dir = config.get("favorites_download_dir", "./favorites")
-    max_concurrent = config.get("max_concurrent_downloads", 3)
+    max_concurrent = config.get("max_concurrent_downloads", 3)  # kept for compatibility
     delay = config.get("delay_between_galleries", 1)
     dry_run = config.get("dry_run", False)
     consecutive_skipped_limit = config.get("favorites_consecutive_skipped_limit", 0)
@@ -481,8 +478,7 @@ def download_favorites(config):
     if dry_run:
         print("🚀 DRY RUN MODE – no files will be written\n")
 
-    base_url = get_cdn_base()
-    print(f"CDN base: {base_url}")
+    base_url = get_cdn_base()  # not used but kept
     print("🔑 Using API key to fetch favorites\n")
 
     page = 1
@@ -500,7 +496,6 @@ def download_favorites(config):
             print("No more favorites found.")
             break
 
-        # Filter out already downloaded favorites
         new_favorites = [fav for fav in favorites if fav['id'] not in FAVORITES_DOWNLOADED]
         skipped_this_page = len(favorites) - len(new_favorites)
         if skipped_this_page > 0:
@@ -650,10 +645,10 @@ def main():
     parser = argparse.ArgumentParser(description="nhentai downloader")
     parser.add_argument("--favorites", action="store_true", help="Download all favorites (requires API key in config)")
     args = parser.parse_args()
-    if DEBUG: print("DEBUG: Arguments parsed: {args}")
+    if DEBUG: print(f"DEBUG: Arguments parsed: {args}")
 
     config = load_config()
-    if DEBUG: print("DEBUG: Config loaded: {list(config.keys()) if config else 'None'}")
+    if DEBUG: print(f"DEBUG: Config loaded: {list(config.keys()) if config else 'None'}")
 
     if args.favorites:
         if DEBUG: print("DEBUG: Running favorites mode")
