@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-nhentai downloader – multi‑query search OR download favorites.
+nhentai downloader - multi-query search OR download favorites.
 Uses the new /galleries/{id}/download endpoint (CBZ) with rate limiting.
 Extracts metadata from the included meta.json (or falls back to API).
 """
@@ -129,7 +129,7 @@ def request_with_retry(method, url, headers=None, json=None, max_retries=3, limi
 # ---------- Tag cache ----------
 def load_tag_cache():
     if not os.path.exists(TAG_CACHE_FILE):
-        print(f"⚠️ Tag cache '{TAG_CACHE_FILE}' not found. Starting empty (will auto‑populate).")
+        print(f"⚠️ Tag cache '{TAG_CACHE_FILE}' not found. Starting empty (will auto-populate).")
         return {}, {}
     with open(TAG_CACHE_FILE, 'r') as f:
         tag_cache = json.load(f)   # tag_id -> {"type": "...", "name": "..."}
@@ -196,7 +196,6 @@ def load_config():
             "favorites_consecutive_skipped_limit": 100,
             "download_dir": "./downloads",
             "favorites_download_dir": "./favorites",
-            "delay_between_galleries": 1,
             "dry_run": False,
             "stop_at_first": False,
             "add_upload_date": True,
@@ -205,7 +204,6 @@ def load_config():
         print("\n# Notes:")
         print("# - 'queries' supports search syntax (https://nhentai.net/info). Each query is processed sequentially.")
         print("# - 'consecutive_skipped_limit': stop after N skipped galleries in a row. 0 = unlimited.")
-        print("# - 'delay_between_galleries' adds a pause after each gallery download.")
         sys.exit(1)
     if DEBUG: print("DEBUG: Config file found, loading...")
     with open(CONFIG_FILE, 'r') as f:
@@ -454,15 +452,14 @@ def download_favorites(config):
         print("❌ API key required for favorites mode. Add 'api_key' to config file.")
         sys.exit(1)
     download_dir = config.get("favorites_download_dir", "./favorites")
-    delay = config.get("delay_between_galleries", 1)
     dry_run = config.get("dry_run", False)
     consecutive_skipped_limit = config.get("favorites_consecutive_skipped_limit", 0)
     add_upload_date = config.get("add_upload_date", False)
 
     if dry_run:
-        print("🚀 DRY RUN MODE – no files will be written\n")
+        print("🚀 DRY RUN")
 
-    print("🔑 Using API key to fetch favorites\n")
+    print("🔑 Using API key")
 
     to_download = []  # list of (gallery_id, gallery_listing)
 
@@ -516,8 +513,6 @@ def download_favorites(config):
             add_to_favorites_cache(gid)
         else:
             print(f"❌ Failed {title}")
-        if idx < len(to_download):
-            time.sleep(delay)
 
     print(f"\n✨ Favorites download complete! Downloaded {total_downloaded} new favorites to {download_dir}")
 
@@ -525,23 +520,21 @@ def download_favorites(config):
 def run_queries(config):
     queries = config.get("queries")
     if not queries or not isinstance(queries, list):
-        print("❌ 'queries' must be a non‑empty list in config for normal mode.")
+        print("❌ 'queries' must be a non-empty list in config for normal mode.")
         sys.exit(1)
     consecutive_skipped_limit = config.get("consecutive_skipped_limit", 0)
     download_dir = config.get("download_dir", "./downloads")
-    delay = config.get("delay_between_galleries", 1)
     dry_run = config.get("dry_run", False)
     stop_at_first = config.get("stop_at_first", False)
     api_key = config.get("api_key", None)
     add_upload_date = config.get("add_upload_date", False)
 
     if dry_run:
-        print("🚀 DRY RUN MODE – no files will be written\n")
-
+        print("🚀 DRY RUN")
     if api_key:
-        print("🔑 Using API key for higher rate limits")
+        print("🔑 Using API key")
     else:
-        print("🔓 No API key – using public endpoints (lower rate limits)")
+        print("🔓 No API key")
 
     # Collect galleries to download
     to_download = []  # list of (gallery_id, gallery_listing)
@@ -598,7 +591,7 @@ def run_queries(config):
                 else:
                     consecutive_skipped = 0
 
-                # New gallery found – add to download list
+                # New gallery found - add to download list
                 to_download.append((gid, gal))
                 query_found += 1
                 if pbar:
@@ -634,8 +627,6 @@ def run_queries(config):
             add_to_skip_list(gid)
         else:
             print(f"❌ Failed {title}")
-        if idx < len(to_download):
-            time.sleep(delay)
 
     print(f"\n✨ All queries done! Downloaded {total_downloaded} CBZ file(s) in {download_dir}")
 
