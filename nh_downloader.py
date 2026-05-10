@@ -569,6 +569,9 @@ def run_queries(config):
             print(f"\n📄 Fetching page {page} for query...")
             try:
                 data = search_galleries(query, page, api_key=api_key)
+                galleries = data.get('result', [])
+                if DEBUG:
+                    print(f"  DEBUG: page {page} returned {len(galleries)} galleries, total {data.get('total',0)}")
             except Exception as e:
                 print(f"Error fetching page {page}: {e}")
                 break
@@ -592,7 +595,9 @@ def run_queries(config):
                     consecutive_skipped = 0
 
                 # New gallery found - add to download list
-                to_download.append((gid, gal))
+                to_download.append((gid, gal, qidx, page))
+                short_title = gal.get('english_title', '')[:60]
+                print(f"  Found {gid}: {short_title}... (query {qidx}, page {page})")
                 query_found += 1
                 if pbar:
                     pbar.update(1)
@@ -619,9 +624,9 @@ def run_queries(config):
     limit_msg = "10 per 5 minutes" if api_key else "5 per 5 minutes"
     print(f"\n📥 Downloading {len(to_download)} new galleries (rate limited to {limit_msg})...")
     total_downloaded = 0
-    for idx, (gid, gal) in enumerate(to_download, 1):
+    for idx, (gid, gal, src_qidx, src_page) in enumerate(to_download, 1):
         title = gal.get('english_title') or gal.get('japanese_title') or str(gid)
-        print(f"\n🎯 [{idx}/{len(to_download)}] {title} (ID: {gid})")
+        print(f"\n🎯 [{idx}/{len(to_download)}] {title} (ID: {gid}) [from query {src_qidx}, page {src_page}]")
         if download_gallery(gid, title, download_dir, dry_run, gal, api_key, add_upload_date):
             total_downloaded += 1
             add_to_skip_list(gid)
